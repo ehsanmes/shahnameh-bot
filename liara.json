@@ -1,7 +1,3 @@
 {
-  "python": {
-    "mirror": true,
-    "port": 8000,
-    "version": "3.12",
-    "timezone": "America/Los_Angeles"
-  }
+  "args": [ "python3 bot.py" ]
+}
