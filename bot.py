@@ -127,31 +127,24 @@ async def set_role(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     ]
 
     try:
+        # ### تغییر مهم: حذف استریم (stream=False) برای پایداری ###
         response = client.chat.completions.create(
             model="gemini-2.5-flash",
             messages=context.user_data["history"],
-            stream=True,
+            stream=False, # <-- حذف استریم
             max_tokens=2000 
         )
         
-        full_response = ""
-        chunk_message = await update.message.reply_text("نقال در حال سرودن شعر است...")
+        # دریافت کامل پاسخ در یک مرحله
+        full_response = response.choices[0].message.content
         
-        await asyncio.sleep(1) # مکث برای پایداری شبکه
+        # پیام موقت را حذف یا جایگزین می‌کنیم
+        await context.bot.delete_message(chat_id=update.effective_chat.id, message_id=update.effective_message.message_id + 1)
         
-        for chunk in response:
-            chunk_content = chunk.choices[0].delta.content
-            if chunk_content:
-                full_response += chunk_content
-                try:
-                    await context.bot.edit_message_text(text=full_response, chat_id=update.effective_chat.id, message_id=chunk_message.message_id)
-                except Exception:
-                    pass
-
         story_text, options = extract_options(full_response)
         
-        # ویرایش نهایی متن (فقط داستان)
-        await context.bot.edit_message_text(text=story_text, chat_id=update.effective_chat.id, message_id=chunk_message.message_id)
+        # نمایش نهایی متن (فقط داستان)
+        await update.message.reply_text(story_text)
         
         # نمایش دکمه‌ها
         if options and options != ["/start"]:
@@ -184,7 +177,7 @@ async def handle_story(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
     history.append({"role": "user", "content": user_input})
     await update.message.reply_text("نقال در حال اندیشیدن به ادامه سرنوشت توست...", reply_markup=ReplyKeyboardRemove()) 
 
-    # به‌روزرسانی دستورالعمل سیستمی (برای اطمینان از حفظ دستورات)
+    # به‌روزرسانی دستورالعمل سیستمی برای حفظ فشار بر هوش مصنوعی
     current_system_prompt = (
         "تو یک نقال حماسی و باوفا به شاهنامه هستی. "
         "داستان را به صورت یک داستان‌گوی حرفه‌ای و با **ادبیاتی ساده، روان و کاملاً روایت‌گونه مبتنی بر زبان شاهنامه** روایت کن. "
@@ -197,31 +190,24 @@ async def handle_story(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
         history[0]["content"] = current_system_prompt
     
     try:
+        # ### تغییر مهم: حذف استریم (stream=False) برای پایداری ###
         response = client.chat.completions.create(
             model="gemini-2.5-flash",
             messages=history,
-            stream=True,
+            stream=False, # <-- حذف استریم
             max_tokens=2000
         )
         
-        full_response = ""
-        chunk_message = await update.message.reply_text("...")
-
-        await asyncio.sleep(1) # مکث برای پایداری شبکه
+        full_response = response.choices[0].message.content
         
-        for chunk in response:
-            chunk_content = chunk.choices[0].delta.content
-            if chunk_content:
-                full_response += chunk_content
-                try:
-                    await context.bot.edit_message_text(text=full_response, chat_id=update.effective_chat.id, message_id=chunk_message.message_id)
-                except Exception:
-                    pass
+        # پیام موقت را حذف یا جایگزین می‌کنیم
+        await context.bot.delete_message(chat_id=update.effective_chat.id, message_id=update.effective_message.message_id + 1)
+
 
         story_text, options = extract_options(full_response)
         
-        # ویرایش نهایی متن
-        await context.bot.edit_message_text(text=story_text, chat_id=update.effective_chat.id, message_id=chunk_message.message_id)
+        # نمایش نهایی متن (فقط داستان)
+        await update.message.reply_text(story_text)
 
         # نمایش دکمه‌ها
         if options and options != ["/start"]:
@@ -267,7 +253,7 @@ def main() -> None:
     )
 
     application.add_handler(conv_handler)
-    logger.info("ربات در حال آغاز به کار است... (نسخه نهایی: تعاملی و بهینه‌سازی شده)")
+    logger.info("ربات در حال آغاز به کار است... (نسخه نهایی: پایدار و دکمه‌ای)")
     application.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
