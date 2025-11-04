@@ -1,7 +1,7 @@
 import os
+import re # برای پیدا کردن گزینه‌ها از متن
 import logging
 from openai import OpenAI
-# ### تغییر ۳: وارد کردن کیبورد ###
 from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove
 from telegram.ext import (
     Application,
@@ -17,7 +17,6 @@ logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
 )
 logging.getLogger("httpx").setLevel(logging.WARNING)
-logging.getLogger("telegram.ext").setLevel(logging.INFO)
 logger = logging.getLogger(__name__)
 
 # گرفتن کلیدهای API از متغیرهای محیطی
@@ -32,17 +31,47 @@ if AVALAI_API_KEY:
             api_key=AVALAI_API_KEY,
             base_url="https://api.avalai.ir/v1"
         )
-        logger.info("کلاینت AvalAI با موفقیت ساخته شد.")
     except Exception as e:
         logger.error(f"امکان ساخت کلاینت OpenAI (AvalAI) وجود نداشت: {e}")
-else:
-    logger.error("متغیر AVALAI_API_KEY پیدا نشد.")
 
 # تعریف حالت‌های مکالمه
 ROLE_STATE, STORY_STATE = range(2)
 
+# =========================================================
+# تابع کمکی برای استخراج دکمه‌ها از متن هوش مصنوعی
+# =========================================================
+def extract_options(text: str) -> tuple[str, list[str]]:
+    """
+    متن داستان را تجزیه کرده و گزینه‌های انتخابی را (که با [1.]، [2.] و [3.] مشخص شده‌اند) استخراج می‌کند.
+    """
+    options = []
+    # الگوی رگولار اکسپرشن برای پیدا کردن گزینه های [عدد. متن]
+    pattern = re.compile(r"\[(\d+)\.\s*(.+?)\]")
+    
+    # پیدا کردن همه گزینه‌ها
+    matches = pattern.findall(text)
+    
+    if matches:
+        # ساخت لیست گزینه‌ها
+        options = [match[1].strip() for match in matches]
+        # حذف گزینه‌ها از متن اصلی داستان برای نمایش تمیز
+        story_text = pattern.sub(r"", text).strip()
+    else:
+        # اگر گزینه‌ای پیدا نشد، متن اصلی داستان را برمی‌گرداند.
+        story_text = text
+
+    # اگر هوش مصنوعی پایان داستان را مشخص کند (مثلاً با "پایان داستان")، دکمه‌ای اضافه می‌کند.
+    if "پایان داستان" in story_text or "داستان به پایان رسید" in story_text:
+         options.append("/start")
+    
+    return story_text, options
+
+# =========================================================
+# توابع مکالمه
+# =========================================================
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """شروع مکالمه و ایجاد زمینه داستانی + دکمه‌ها."""
+    """شروع مکالمه و ایجاد دکمه‌های نقش."""
     
     story_context = (
         "سلام! من نقال شاهنامه هستم و تو به قلب داستان‌های حماسی ایران پا گذاشته‌ای.\n\n"
@@ -52,22 +81,22 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     )
     await update.message.reply_text(story_context)
     
-    # ### تغییر ۳: تعریف دکمه‌های نقش ###
+    # تعریف دکمه‌های نقش
     reply_keyboard = [
         ["رستم", "سهراب", "گردآفرید"],
         ["سیاوش", "منیژه", "فرنگیس"],
     ]
     markup = ReplyKeyboardMarkup(
         reply_keyboard, 
-        one_time_keyboard=True,  # کیبورد پس از انتخاب پنهان می‌شود
-        resize_keyboard=True,    # اندازه دکمه‌ها بهینه‌ می‌شود
+        one_time_keyboard=True,
+        resize_keyboard=True,
         input_field_placeholder="یکی از پهلوانان را انتخاب کن..."
     )
 
     await update.message.reply_text(
         "نقش تو در این داستان چیست؟\n"
         "از گزینه‌های زیر انتخاب کن، یا نام پهلوان محبوب خودت را تایپ کن:",
-        reply_markup=markup  # ارسال دکمه‌ها به کاربر
+        reply_markup=markup
     )
     
     return ROLE_STATE
@@ -80,21 +109,20 @@ async def set_role(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 
     user_role = update.message.text
     context.user_data["role"] = user_role
-    logger.info(f"نقش انتخاب شده توسط کاربر: {user_role}")
-
-    # ### تغییر ۳: حذف دکمه‌ها پس از انتخاب ###
+    
     await update.message.reply_text(
         f"عالی! تو اکنون «{user_role}» هستی. بگذار داستان تو را آغاز کنم...\n\n"
         "(لطفا چند لحظه صبر کن تا اولین بخش از سرنوشت تو را روایت کنم...)",
-        reply_markup=ReplyKeyboardRemove() # حذف دکمه‌های قبلی
+        reply_markup=ReplyKeyboardRemove()
     )
 
-    # ### تغییر ۱: تغییر لحن به ساده و امروزی ###
+    # ### تغییر ۱: تاکید بر لحن دوم شخص مفرد و اجبار به دادن ۳ گزینه ###
     system_prompt = (
         "تو یک نقال داستان‌گو هستی. کاربر نقش یکی از شخصیت‌های شاهنامه را انتخاب کرده است. "
         "تو باید یک داستان تعاملی و جذاب برای او روایت کنی. "
-        "داستان را با زبانی ساده، امروزی، و دوستانه بنویس (نه به زبان ادبیات کهن). "
-        "هر بخش از داستان را با یک چالش یا یک انتخاب برای کاربر تمام کن."
+        "داستان را با زبانی ساده، امروزی، و دوستانه و **با تمرکز بر مخاطب (استفاده از ضمیر تو/شما)** بنویس. "
+        "**هر بخش از داستان باید مختصر و در نهایت به یک چالش ختم شود.** "
+        "**پس از اتمام داستان، حتماً ۳ گزینه انتخابی جدید برای ادامه داستان به صورت [1. متن گزینه] [2. متن گزینه] [3. متن گزینه] ارائه کن. بدون این گزینه‌ها داستان ناقص است.**"
     )
     
     first_prompt = f"داستان من را به عنوان «{user_role}» آغاز کن. اولین صحنه و اولین چالش من چه خواهد بود؟"
@@ -109,8 +137,7 @@ async def set_role(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
             model="gpt-4o-mini",
             messages=context.user_data["history"],
             stream=True,
-            # ### تغییر ۲: افزایش طول متن خروجی ###
-            max_tokens=1500  # افزایش حداکثر طول پاسخ برای جلوگیری از قطع شدن
+            max_tokens=1500
         )
         
         full_response = ""
@@ -121,11 +148,23 @@ async def set_role(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
             if chunk_content:
                 full_response += chunk_content
                 try:
-                    # ویرایش پیام قبلی برای ایجاد افکت استریم
                     await context.bot.edit_message_text(text=full_response, chat_id=update.effective_chat.id, message_id=chunk_message.message_id)
                 except Exception:
-                    pass # نادیده گرفتن خطای ویرایش مکرر
+                    pass
 
+        # ### تغییر ۲: استخراج گزینه‌ها و نمایش دکمه ###
+        story_text, options = extract_options(full_response)
+        
+        # ویرایش نهایی متن بدون گزینه‌های [1.] و [2.]
+        await context.bot.edit_message_text(text=story_text, chat_id=update.effective_chat.id, message_id=chunk_message.message_id)
+        
+        # نمایش دکمه‌ها
+        if options:
+            reply_keyboard = [[opt] for opt in options]
+            markup = ReplyKeyboardMarkup(reply_keyboard, resize_keyboard=True, one_time_keyboard=False)
+            await update.message.reply_text("تصمیم تو چیست؟", reply_markup=markup)
+        
+        # ذخیره پاسخ کامل در تاریخچه
         context.user_data["history"].append({"role": "assistant", "content": full_response})
         
     except Exception as e:
@@ -140,9 +179,14 @@ async def set_role(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 
 async def handle_story(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """ادامه داستان بر اساس ورودی کاربر."""
+    if client is None:
+        await update.message.reply_text("خطایی در اتصال به نقال (مدل هوش مصنوعی) رخ داده است. لطفا دوباره تلاش کنید.")
+        return ConversationHandler.END
+
     user_input = update.message.text
     history = context.user_data["history"]
 
+    # افزودن پاسخ کاربر به تاریخچه
     history.append({"role": "user", "content": user_input})
     await update.message.reply_text("نقال در حال اندیشیدن به ادامه سرنوشت توست...")
 
@@ -151,8 +195,7 @@ async def handle_story(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
             model="gpt-4o-mini",
             messages=history,
             stream=True,
-            # ### تغییر ۲: افزایش طول متن خروجی ###
-            max_tokens=1500 # افزایش حداکثر طول پاسخ برای جلوگیری از قطع شدن
+            max_tokens=1500
         )
         
         full_response = ""
@@ -165,7 +208,22 @@ async def handle_story(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
                 try:
                     await context.bot.edit_message_text(text=full_response, chat_id=update.effective_chat.id, message_id=chunk_message.message_id)
                 except Exception:
-                    pass # نادیده گرفتن خطای ویرایش مکرر
+                    pass
+
+        # ### تغییر ۲: استخراج گزینه‌ها و نمایش دکمه (همانند set_role) ###
+        story_text, options = extract_options(full_response)
+        
+        # ویرایش نهایی متن بدون گزینه‌های [1.] و [2.]
+        await context.bot.edit_message_text(text=story_text, chat_id=update.effective_chat.id, message_id=chunk_message.message_id)
+
+        # نمایش دکمه‌ها
+        if options:
+            reply_keyboard = [[opt] for opt in options]
+            markup = ReplyKeyboardMarkup(reply_keyboard, resize_keyboard=True, one_time_keyboard=False)
+            await update.message.reply_text("تصمیم تو چیست؟", reply_markup=markup)
+        else:
+            # اگر دکمه‌ای نیست، کیبورد را بردار
+            await update.message.reply_text("لطفاً پاسخ خود را تایپ کنید تا داستان ادامه یابد.", reply_markup=ReplyKeyboardRemove())
 
         history.append({"role": "assistant", "content": full_response})
         
@@ -180,7 +238,7 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """پایان دادن به مکالمه."""
     await update.message.reply_text(
         "بدرود! باشد که در داستانی دیگر تو را ببینم.",
-        reply_markup=ReplyKeyboardRemove() # حذف دکمه‌ها هنگام لغو
+        reply_markup=ReplyKeyboardRemove()
     )
     return ConversationHandler.END
 
@@ -195,7 +253,6 @@ def main() -> None:
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler("start", start)],
         states={
-            # این بخش به طور خودکار هم متن تایپ شده و هم متن دکمه‌ها را می‌پذیرد
             ROLE_STATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, set_role)],
             STORY_STATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_story)],
         },
@@ -203,28 +260,8 @@ def main() -> None:
     )
 
     application.add_handler(conv_handler)
-    logger.info("ربات در حال آغاز به کار است... (نسخه ۲: با دکمه و لحن ساده)")
-    application.run_polling()
-
-if __name__ == "__main__":
-    main()
-
-def main() -> None:
-    """اجرای ربات."""
-    
-    # ... (کدهای بررسی و ساخت Application ثابت هستند)
-
-    application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
-
-    # ... (کدهای ساخت ConversationHandler ثابت هستند)
-
-    application.add_handler(conv_handler)
-
-    logger.info("ربات در حال آغاز به کار است... (نسخه نهایی با پاک‌سازی صف آپدیت)")
-    
-    # ### تغییر: اضافه کردن drop_pending_updates=True ###
-    # این پارامتر به Application می‌گوید که قبل از شروع، تمام پیام‌های قدیمی را که در صف تلگرام مانده‌اند، پاک کند.
-    application.run_polling(drop_pending_updates=True) 
+    logger.info("ربات در حال آغاز به کار است... (نسخه نهایی: تعاملی با دکمه)")
+    application.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
     main()
