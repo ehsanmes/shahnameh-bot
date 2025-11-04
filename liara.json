@@ -1,6 +1,0 @@
-{
-  "platform": "python",
-  "config": {
-    "start-command": "python bot.py"
-  }
-}
