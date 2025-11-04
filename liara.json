@@ -1,6 +1,8 @@
 {
-  "platform": "python",
-  "config": {
-    "start-command": "python bot.py"
-  }
+"app":"jovial-satoshi--chbpjhpx"
+"port":80
+"build":{
+"location":"iran"
+}
+"disks":[]
 }
