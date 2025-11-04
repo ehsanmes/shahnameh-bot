@@ -1,7 +1,8 @@
 import os
 import logging
-from openai import OpenAI  # <--- کلید حل مشکل: استفاده از کتابخانه رسمی OpenAI
-from telegram import Update
+from openai import OpenAI
+# ### تغییر ۳: وارد کردن کیبورد ###
+from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -15,40 +16,34 @@ from telegram.ext import (
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
 )
-# کاهش لاگ‌های اضافه کتابخانه‌ها
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("telegram.ext").setLevel(logging.INFO)
-
 logger = logging.getLogger(__name__)
 
-# --- گرفتن کلیدهای API از متغیرهای محیطی ---
-# اینها باید در داشبورد Railway در تب "Variables" تنظیم شوند
+# گرفتن کلیدهای API از متغیرهای محیطی
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 AVALAI_API_KEY = os.environ.get("AVALAI_API_KEY")
 
-# --- راه‌اندازی کلاینت OpenAI برای اتصال به AvalAI ---
-# این بخش دقیقاً طبق مستندات AvalAI عمل می‌کند
+# راه‌اندازی کلاینت OpenAI برای اتصال به AvalAI
 client = None
 if AVALAI_API_KEY:
     try:
         client = OpenAI(
             api_key=AVALAI_API_KEY,
-            base_url="https://api.avalai.ir/v1"  # <--- آدرس API یکپارچه AvalAI
+            base_url="https://api.avalai.ir/v1"
         )
         logger.info("کلاینت AvalAI با موفقیت ساخته شد.")
     except Exception as e:
         logger.error(f"امکان ساخت کلاینت OpenAI (AvalAI) وجود نداشت: {e}")
 else:
     logger.error("متغیر AVALAI_API_KEY پیدا نشد.")
-# ===============================================================
 
 # تعریف حالت‌های مکالمه
 ROLE_STATE, STORY_STATE = range(2)
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """شروع مکالمه و ایجاد زمینه داستانی (نسخه اصلاح شده شما)."""
+    """شروع مکالمه و ایجاد زمینه داستانی + دکمه‌ها."""
     
-    # ۱. ایجاد زمینه داستانی
     story_context = (
         "سلام! من نقال شاهنامه هستم و تو به قلب داستان‌های حماسی ایران پا گذاشته‌ای.\n\n"
         "هنگامه‌ای است بس شگرف! تورانیان به مرزهای ایران تاخته‌اند، "
@@ -57,11 +52,22 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     )
     await update.message.reply_text(story_context)
     
-    # ۲. درخواست نقش با مثال‌های متنوع (کلمه "مانند" حذف شد)
+    # ### تغییر ۳: تعریف دکمه‌های نقش ###
+    reply_keyboard = [
+        ["رستم", "سهراب", "گردآفرید"],
+        ["سیاوش", "منیژه", "فرنگیس"],
+    ]
+    markup = ReplyKeyboardMarkup(
+        reply_keyboard, 
+        one_time_keyboard=True,  # کیبورد پس از انتخاب پنهان می‌شود
+        resize_keyboard=True,    # اندازه دکمه‌ها بهینه‌ می‌شود
+        input_field_placeholder="یکی از پهلوانان را انتخاب کن..."
+    )
+
     await update.message.reply_text(
         "نقش تو در این داستان چیست؟\n"
-        "نام یکی از پهلوانان، شاهان، یا دلیران شاهنامه را انتخاب کن تا داستان اختصاصی تو را آغاز کنم.\n\n"
-        "مثلاً: رستم، سهراب، گودرز، فرنگیس، گردآفرید، سیاوش، منیژه"
+        "از گزینه‌های زیر انتخاب کن، یا نام پهلوان محبوب خودت را تایپ کن:",
+        reply_markup=markup  # ارسال دکمه‌ها به کاربر
     )
     
     return ROLE_STATE
@@ -76,48 +82,50 @@ async def set_role(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     context.user_data["role"] = user_role
     logger.info(f"نقش انتخاب شده توسط کاربر: {user_role}")
 
+    # ### تغییر ۳: حذف دکمه‌ها پس از انتخاب ###
     await update.message.reply_text(
         f"عالی! تو اکنون «{user_role}» هستی. بگذار داستان تو را آغاز کنم...\n\n"
-        "(لطفا چند لحظه صبر کن تا اولین بخش از سرنوشت تو را روایت کنم...)"
+        "(لطفا چند لحظه صبر کن تا اولین بخش از سرنوشت تو را روایت کنم...)",
+        reply_markup=ReplyKeyboardRemove() # حذف دکمه‌های قبلی
     )
 
-    # ساخت اولین پیام برای مدل (فرمت جدید OpenAI)
+    # ### تغییر ۱: تغییر لحن به ساده و امروزی ###
     system_prompt = (
-        "تو یک نقال حماسی شاهنامه هستی. کاربر نقش یکی از شخصیت‌های شاهنامه را انتخاب کرده است. "
-        "تو باید یک داستان تعاملی کوتاه بر اساس آن نقش برای او روایت کنی. "
-        "داستان باید پر از توصیفات حماسی و به زبان ادبیات کهن ایران باشد. "
+        "تو یک نقال داستان‌گو هستی. کاربر نقش یکی از شخصیت‌های شاهنامه را انتخاب کرده است. "
+        "تو باید یک داستان تعاملی و جذاب برای او روایت کنی. "
+        "داستان را با زبانی ساده، امروزی، و دوستانه بنویس (نه به زبان ادبیات کهن). "
         "هر بخش از داستان را با یک چالش یا یک انتخاب برای کاربر تمام کن."
     )
     
     first_prompt = f"داستان من را به عنوان «{user_role}» آغاز کن. اولین صحنه و اولین چالش من چه خواهد بود؟"
     
-    # تاریخچه گفتگو (فرمت جدید OpenAI)
     context.user_data["history"] = [
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": first_prompt}
     ]
 
-    # ارسال درخواست به API (روش جدید OpenAI)
     try:
-        # ما از مدل gpt-4o-mini استفاده می‌کنیم که در لیست AvalAI ارزان و سریع بود
         response = client.chat.completions.create(
             model="gpt-4o-mini",
             messages=context.user_data["history"],
-            stream=True  # فعال کردن حالت استریم (تایپ کردن)
+            stream=True,
+            # ### تغییر ۲: افزایش طول متن خروجی ###
+            max_tokens=1500  # افزایش حداکثر طول پاسخ برای جلوگیری از قطع شدن
         )
         
         full_response = ""
-        # یک پیام موقت خالی ارسال می‌کنیم تا بعداً آن را ویرایش کنیم
         chunk_message = await update.message.reply_text("نقال در حال سرودن شعر است...")
         
         for chunk in response:
             chunk_content = chunk.choices[0].delta.content
             if chunk_content:
                 full_response += chunk_content
-                # ویرایش پیام قبلی برای ایجاد افکت استریم
-                await context.bot.edit_message_text(text=full_response, chat_id=update.effective_chat.id, message_id=chunk_message.message_id)
+                try:
+                    # ویرایش پیام قبلی برای ایجاد افکت استریم
+                    await context.bot.edit_message_text(text=full_response, chat_id=update.effective_chat.id, message_id=chunk_message.message_id)
+                except Exception:
+                    pass # نادیده گرفتن خطای ویرایش مکرر
 
-        # ذخیره پاسخ کامل در تاریخچه
         context.user_data["history"].append({"role": "assistant", "content": full_response})
         
     except Exception as e:
@@ -135,16 +143,16 @@ async def handle_story(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
     user_input = update.message.text
     history = context.user_data["history"]
 
-    # افزودن پاسخ کاربر به تاریخچه
     history.append({"role": "user", "content": user_input})
     await update.message.reply_text("نقال در حال اندیشیدن به ادامه سرنوشت توست...")
 
-    # ارسال تاریخچه به API
     try:
         response = client.chat.completions.create(
             model="gpt-4o-mini",
             messages=history,
-            stream=True
+            stream=True,
+            # ### تغییر ۲: افزایش طول متن خروجی ###
+            max_tokens=1500 # افزایش حداکثر طول پاسخ برای جلوگیری از قطع شدن
         )
         
         full_response = ""
@@ -154,9 +162,11 @@ async def handle_story(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
             chunk_content = chunk.choices[0].delta.content
             if chunk_content:
                 full_response += chunk_content
-                await context.bot.edit_message_text(text=full_response, chat_id=update.effective_chat.id, message_id=chunk_message.message_id)
+                try:
+                    await context.bot.edit_message_text(text=full_response, chat_id=update.effective_chat.id, message_id=chunk_message.message_id)
+                except Exception:
+                    pass # نادیده گرفتن خطای ویرایش مکرر
 
-        # افزودن پاسخ مدل به تاریخچه
         history.append({"role": "assistant", "content": full_response})
         
     except Exception as e:
@@ -169,32 +179,23 @@ async def handle_story(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """پایان دادن به مکالمه."""
     await update.message.reply_text(
-        "بدرود! باشد که در داستانی دیگر تو را ببینم."
+        "بدرود! باشد که در داستانی دیگر تو را ببینم.",
+        reply_markup=ReplyKeyboardRemove() # حذف دکمه‌ها هنگام لغو
     )
     return ConversationHandler.END
 
 def main() -> None:
     """اجرای ربات."""
-    
-    # بررسی نهایی متغیرها قبل از اجرا
-    if not TELEGRAM_BOT_TOKEN:
-        logger.fatal("متغیر TELEGRAM_BOT_TOKEN پیدا نشد. ربات متوقف می‌شود.")
-        return
-        
-    if not AVALAI_API_KEY:
-        logger.fatal("متغیر AVALAI_API_KEY پیدا نشد. ربات متوقف می‌شود.")
-        return
-        
-    if client is None:
-        logger.fatal("کلاینت AvalAI (OpenAI) به درستی ساخته نشد. ربات متوقف می‌شود.")
+    if not TELEGRAM_BOT_TOKEN or not AVALAI_API_KEY or client is None:
+        logger.fatal("یکی از متغیرهای محیطی (تلگرام، AvalAI) به درستی تنظیم نشده است. ربات متوقف می‌شود.")
         return
 
     application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
 
-    # تعریف ConversationHandler
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler("start", start)],
         states={
+            # این بخش به طور خودکار هم متن تایپ شده و هم متن دکمه‌ها را می‌پذیرد
             ROLE_STATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, set_role)],
             STORY_STATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_story)],
         },
@@ -202,11 +203,7 @@ def main() -> None:
     )
 
     application.add_handler(conv_handler)
-
-    # نمایش لاگ آغاز به کار
-    logger.info("ربات در حال آغاز به کار است... (با استفاده از کتابخانه OpenAI)")
-    
-    # اجرای ربات
+    logger.info("ربات در حال آغاز به کار است... (نسخه ۲: با دکمه و لحن ساده)")
     application.run_polling()
 
 if __name__ == "__main__":
