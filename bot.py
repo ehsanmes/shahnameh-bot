@@ -31,7 +31,8 @@ if AVALAI_API_KEY:
     try:
         client = OpenAI(
             api_key=AVALAI_API_KEY,
-            base_url="https://api.avalai.ir/v1"
+            base_url="https://api.avalai.ir/v1",
+            timeout=20.0 # <-- تغییر نهایی: افزایش زمان‌بندی به ۲۰ ثانیه
         )
     except Exception as e:
         logger.error(f"امکان ساخت کلاینت OpenAI (AvalAI) وجود نداشت: {e}")
