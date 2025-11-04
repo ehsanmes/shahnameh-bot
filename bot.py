@@ -208,3 +208,23 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
+def main() -> None:
+    """اجرای ربات."""
+    
+    # ... (کدهای بررسی و ساخت Application ثابت هستند)
+
+    application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
+
+    # ... (کدهای ساخت ConversationHandler ثابت هستند)
+
+    application.add_handler(conv_handler)
+
+    logger.info("ربات در حال آغاز به کار است... (نسخه نهایی با پاک‌سازی صف آپدیت)")
+    
+    # ### تغییر: اضافه کردن drop_pending_updates=True ###
+    # این پارامتر به Application می‌گوید که قبل از شروع، تمام پیام‌های قدیمی را که در صف تلگرام مانده‌اند، پاک کند.
+    application.run_polling(drop_pending_updates=True) 
+
+if __name__ == "__main__":
+    main()
