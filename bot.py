@@ -3,14 +3,14 @@ import re
 import logging
 import asyncio 
 from openai import OpenAI
-from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove, InlineKeyboardMarkup, InlineKeyboardButton # <-- تغییر: اضافه شدن دکمه‌های شیشه‌ای
+from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove, InlineKeyboardMarkup, InlineKeyboardButton # <-- دکمه‌های شیشه‌ای
 from telegram.ext import (
     Application,
     CommandHandler,
     ContextTypes,
     ConversationHandler,
     MessageHandler,
-    CallbackQueryHandler, # <-- جدید: برای مدیریت دکمه‌های شیشه‌ای
+    CallbackQueryHandler, # <-- مدیریت دکمه‌های شیشه‌ای
     filters,
 )
 
@@ -47,13 +47,13 @@ def extract_options(text: str) -> tuple[str, list[str]]:
     متن داستان را تجزیه کرده و گزینه‌های انتخابی را استخراج می‌کند.
     """
     options = []
-    # الگوی رگولار اکسپرشن برای پیدا کردن گزینه های [عدد. متن] (هوش مصنوعی همچنان باید این فرمت را تولید کند)
+    # الگوی رگولار اکسپرشن برای پیدا کردن گزینه های [عدد. متن]
     pattern = re.compile(r"\[(\d+)\.\s*(.+?)\]")
     
     matches = pattern.findall(text)
     
     if matches:
-        # ساخت لیست گزینه‌ها: فقط متن داخل براکت‌ها را می‌گیریم
+        # ساخت لیست گزینه‌ها: فقط متن داخل براکت‌ها را برای استفاده در دکمه‌ها می‌گیریم
         options = [match[1].strip() for match in matches]
         # حذف گزینه‌ها از متن اصلی داستان برای نمایش تمیز
         story_text = pattern.sub(r"", text).strip()
@@ -105,11 +105,15 @@ async def set_role(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     user_role = update.message.text
     context.user_data["role"] = user_role
     
-    # پیام موقت برای شروع
+    # 1. ارسال پیام خوش‌آمدگویی نهایی و حذف دکمه‌های Reply
+    await update.message.reply_text(
+        f"عالی! تو اکنون «{user_role}» هستی. بگذار داستان تو را آغاز کنم...",
+        reply_markup=ReplyKeyboardRemove()
+    )
+    
+    # 2. ارسال پیام موقت مجزا برای شروع ویرایش
     initial_message = await update.message.reply_text(
-        f"عالی! تو اکنون «{user_role}» هستی. بگذار داستان تو را آغاز کنم...\n\n"
-        "(لطفا چند لحظه صبر کن تا اولین بخش از سرنوشت تو را روایت کنم...)",
-        reply_markup=ReplyKeyboardRemove() # حذف دکمه‌های نقش
+        "(لطفا چند لحظه صبر کن تا اولین بخش از سرنوشت تو را روایت کنم...)"
     )
 
     # دستورالعمل سیستمی نهایی: ادبیات روان و اجبار به دکمه‌های کوتاه
@@ -130,7 +134,7 @@ async def set_role(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     ]
 
     try:
-        # درخواست به API (بدون استریم)
+        # درخواست به API (بدون استریم برای پایداری)
         response = client.chat.completions.create(
             model="gemini-2.5-flash",
             messages=context.user_data["history"],
@@ -142,7 +146,7 @@ async def set_role(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         
         story_text, options = extract_options(full_response)
         
-        # ### تغییر مهم: استفاده از دکمه شیشه‌ای (Inline Keyboard) ###
+        # نمایش دکمه‌ها (از نوع شیشه‌ای)
         if options and options != ["/start"]:
             keyboard = [[InlineKeyboardButton(opt, callback_data=opt)] for opt in options]
             reply_markup = InlineKeyboardMarkup(keyboard)
@@ -154,12 +158,15 @@ async def set_role(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
             await update.message.reply_text("تصمیم تو چیست؟", reply_markup=reply_markup)
         else:
             final_message = story_text + ("\n\nبرای شروع دوباره /start را بزنید." if "/start" in options else "")
-            await initial_message.edit_text(final_message, reply_markup=None) # حذف دکمه‌های شیشه‌ای (اگر وجود داشته باشد)
+            
+            # ویرایش پیام موقت به متن داستان نهایی
+            await initial_message.edit_text(final_message, reply_markup=None)
         
         context.user_data["history"].append({"role": "assistant", "content": full_response})
         
     except Exception as e:
         logger.error(f"خطا در ارتباط با API در set_role: {e}")
+        # ویرایش پیام موقت به پیام خطا
         await initial_message.edit_text(f"خطایی در روایت داستان رخ داد: {e}", reply_markup=None)
         return ConversationHandler.END
 
@@ -175,31 +182,22 @@ async def handle_inline_button(update: Update, context: ContextTypes.DEFAULT_TYP
 
     user_choice = query.data
     
-    # اطمینان از حذف دکمه‌های شیشه‌ای پس از کلیک
+    # 1. حذف دکمه‌های شیشه‌ای پس از کلیک
     await query.edit_message_reply_markup(reply_markup=None)
     
-    # ارسال انتخاب کاربر به عنوان پیام جدید برای تابع handle_story
-    temp_message = await context.bot.send_message(query.message.chat_id, user_choice)
+    # 2. ارسال انتخاب کاربر به عنوان پیام جدید
+    await context.bot.send_message(query.message.chat_id, user_choice)
     
-    # فراخوانی تابع handle_story با پیام شبیه‌سازی شده
-    # ما باید update را شبیه‌سازی کنیم تا جریان ConversationHandler حفظ شود.
-    
-    # برای جلوگیری از خطاهای احتمالی، می‌توانیم به جای شبیه‌سازی، منطق handle_story را مستقیماً اجرا کنیم:
-    
+    # 3. آماده‌سازی تاریخچه و ارسال پیام موقت
     history = context.user_data.get("history")
     if not history:
         await context.bot.send_message(query.message.chat_id, "متاسفانه تاریخچه گفتگو پیدا نشد. لطفا /start را بزنید.")
         return ConversationHandler.END
 
-    # ادامه منطق handle_story با انتخاب کاربر
-    
-    # 1. افزودن پاسخ کاربر به تاریخچه
     history.append({"role": "user", "content": user_choice})
-    
-    # 2. ارسال پیام موقت
     initial_message = await context.bot.send_message(query.message.chat_id, "نقال در حال اندیشیدن به ادامه سرنوشت توست...")
 
-    # 3. به‌روزرسانی دستورالعمل سیستمی
+    # 4. به‌روزرسانی دستورالعمل سیستمی
     current_system_prompt = (
         "تو یک نقال حماسی و باوفا به شاهنامه هستی. "
         "داستان را به صورت یک داستان‌گوی حرفه‌ای و با **ادبیاتی ساده، روان و کاملاً روایت‌گونه مبتنی بر زبان شاهنامه** روایت کن. "
@@ -211,7 +209,7 @@ async def handle_inline_button(update: Update, context: ContextTypes.DEFAULT_TYP
     if history[0]["role"] == "system":
         history[0]["content"] = current_system_prompt
 
-    # 4. درخواست به API
+    # 5. درخواست به API
     try:
         response = client.chat.completions.create(
             model="gemini-2.5-flash",
@@ -224,16 +222,13 @@ async def handle_inline_button(update: Update, context: ContextTypes.DEFAULT_TYP
         
         story_text, options = extract_options(full_response)
         
-        # 5. نمایش نهایی متن
-        
+        # 6. نمایش نهایی متن و دکمه‌ها
         if options and options != ["/start"]:
             keyboard = [[InlineKeyboardButton(opt, callback_data=opt)] for opt in options]
             reply_markup = InlineKeyboardMarkup(keyboard)
             
-            # ویرایش پیام موقت به متن داستان
             await initial_message.edit_text(story_text)
             
-            # ارسال پیام جدید برای دکمه‌های شیشه‌ای
             await context.bot.send_message(query.message.chat_id, "تصمیم تو چیست؟", reply_markup=reply_markup)
         else:
             final_message = story_text + ("\n\nبرای شروع دوباره /start را بزنید." if "/start" in options else "")
@@ -243,7 +238,7 @@ async def handle_inline_button(update: Update, context: ContextTypes.DEFAULT_TYP
         
     except Exception as e:
         logger.error(f"خطا در ارتباط با API در handle_inline_button: {e}")
-        await context.bot.send_message(query.message.chat_id, f"خطایی در روایت داستان رخ داد: {e}")
+        await initial_message.edit_text(f"خطایی در روایت داستان رخ داد: {e}", reply_markup=None)
         return ConversationHandler.END
 
     return STORY_STATE
@@ -251,7 +246,6 @@ async def handle_inline_button(update: Update, context: ContextTypes.DEFAULT_TYP
 async def handle_story(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """ادامه داستان بر اساس ورودی کاربر (فقط برای متن‌های تایپ شده)."""
     
-    # اگر کاربر متن تایپ کرد (نه دکمه شیشه‌ای)، پردازش می‌شود.
     if client is None:
         await update.message.reply_text("خطایی در اتصال به نقال رخ داده است. لطفا دوباره تلاش کنید.")
         return ConversationHandler.END
@@ -259,7 +253,6 @@ async def handle_story(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
     user_input = update.message.text
     history = context.user_data["history"]
 
-    # افزودن پاسخ کاربر به تاریخچه
     history.append({"role": "user", "content": user_input})
     
     # پیام موقت برای شروع
@@ -304,19 +297,18 @@ async def handle_story(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
         
     except Exception as e:
         logger.error(f"خطا در ارتباط با API در handle_story: {e}")
-        await update.message.reply_text(f"خطایی در ادامه داستان رخ داد: {e}")
+        await initial_message.edit_text(f"خطایی در روایت داستان رخ داد: {e}", reply_markup=None)
         return ConversationHandler.END
 
     return STORY_STATE
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """پایان دادن به مکالمه."""
-    # اگر ReplyKeyboardMarkup فعال بود، آن را حذف می‌کند
     await update.message.reply_text(
         "بدرود! باشد که در داستانی دیگر تو را ببینم.",
         reply_markup=ReplyKeyboardRemove()
     )
-    # همچنین مطمئن می‌شویم دکمه‌های شیشه‌ای قبلی حذف شوند (اگر وجود دارند)
+    # حذف دکمه‌های شیشه‌ای (اگر وجود دارند)
     try:
         await context.bot.edit_message_reply_markup(update.effective_chat.id, update.effective_message.message_id, reply_markup=None)
     except Exception:
@@ -335,11 +327,9 @@ def main() -> None:
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler("start", start)],
         states={
-            # ورود: همچنان متن را می‌پذیرد (برای دکمه‌های ReplyKeyboard)
             ROLE_STATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, set_role)],
-            # داستان: برای متن تایپ شده استفاده می‌شود
             STORY_STATE: [
-                CallbackQueryHandler(handle_inline_button), # <-- جدید: برای دکمه‌های شیشه‌ای
+                CallbackQueryHandler(handle_inline_button), # <-- مدیریت دکمه‌های شیشه‌ای
                 MessageHandler(filters.TEXT & ~filters.COMMAND, handle_story), # برای پاسخ‌های تایپی
             ],
         },
