@@ -45,8 +45,7 @@ def extract_options(text: str) -> tuple[str, list[str]]:
     متن داستان را تجزیه کرده و گزینه‌های انتخابی را (که با [1.]، [2.] و [3.] مشخص شده‌اند) استخراج می‌کند.
     """
     options = []
-    # الگوی رگولار اکسپرشن برای پیدا کردن گزینه های [عدد. متن]
-    # این الگو با توجه به سختگیری کد AI تنظیم شده است.
+    # الگوی رگولار اکسپرشن برای پیدا کردن گزینه های [عدد. متن] (اینجا از RegEx برای تشخیص دکمه‌ها استفاده می‌شود)
     pattern = re.compile(r"\[(\d+)\.\s*(.+?)\]")
     
     # پیدا کردن همه گزینه‌ها
@@ -56,7 +55,6 @@ def extract_options(text: str) -> tuple[str, list[str]]:
         # ساخت لیست گزینه‌ها
         options = [match[1].strip() for match in matches]
         # حذف گزینه‌ها از متن اصلی داستان برای نمایش تمیز
-        # این کار از تداخل متن با دکمه جلوگیری می‌کند.
         story_text = pattern.sub(r"", text).strip()
     else:
         # اگر گزینه‌ای پیدا نشد، متن اصلی داستان را برمی‌گرداند.
@@ -118,11 +116,13 @@ async def set_role(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         reply_markup=ReplyKeyboardRemove()
     )
 
-    # ### اصلاحیه نهایی System Prompt برای القای نقش اول و اجبار به فرمت دکمه ###
+    # دستورالعمل سیستمی نهایی: وفاداری به شاهنامه و اجبار به فرمت دکمه
     system_prompt = (
-        "تو یک نقال داستان‌گو هستی. داستان را با زبانی ساده و دوستانه و با **تمرکز بر مخاطب (استفاده از ضمیر تو/شما)** بنویس. "
-        "**هر بخش داستان باید مختصر و در نهایت به یک چالش ختم شود.** "
-        "**پس از اتمام داستان، حتماً ۳ گزینه انتخابی جدید برای ادامه داستان به صورت [1. متن گزینه] [2. متن گزینه] [3. متن گزینه] ارائه کن. این فرمت [1. ] برای شناسایی دکمه‌ها توسط ربات الزامی است.**"
+        "تو یک نقال حماسی و باوفا به شاهنامه هستی. "
+        "داستان را با زبانی ساده، اما با حفظ **اصول و لحن حماسی** و **وفادار به بطن داستان‌های فردوسی** روایت کن. "
+        "فقط از وقایع، شخصیت‌ها، و مکان‌های مرتبط با جهان شاهنامه استفاده کن. "
+        "با **تمرکز بر مخاطب (تو/شما)** داستان را پیش ببر. "
+        "**هر بخش داستان باید مختصر، پرچالش و در نهایت با ۳ گزینه انتخابی جدید به صورت [1. متن گزینه] [2. متن گزینه] [3. متن گزینه] تمام شود. این فرمت [1. ] برای شناسایی دکمه‌ها توسط ربات الزامی است.**"
     )
     
     first_prompt = f"داستان من را به عنوان «{user_role}» آغاز کن. اولین صحنه و اولین چالش من چه خواهد بود؟"
@@ -133,11 +133,12 @@ async def set_role(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     ]
 
     try:
+        # استفاده از مدل Gemini-2.5-flash برای سرعت و پایداری بیشتر
         response = client.chat.completions.create(
-            model="gpt-4o-mini",
+            model="gemini-2.5-flash",
             messages=context.user_data["history"],
             stream=True,
-            max_tokens=2000 # افزایش بیشتر برای اطمینان از کامل شدن
+            max_tokens=2000 
         )
         
         full_response = ""
@@ -148,6 +149,7 @@ async def set_role(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
             if chunk_content:
                 full_response += chunk_content
                 try:
+                    # ایجاد افکت تایپ
                     await context.bot.edit_message_text(text=full_response, chat_id=update.effective_chat.id, message_id=chunk_message.message_id)
                 except Exception:
                     pass
@@ -169,10 +171,7 @@ async def set_role(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         
     except Exception as e:
         logger.error(f"خطا در ارتباط با API در set_role: {e}")
-        if "401" in str(e):
-             await update.message.reply_text("خطا در ارتباط با نقال (ارور 401). کلید API شما در Railway اشتباه یا نامعتبر است.")
-        else:
-            await update.message.reply_text(f"خطایی در روایت داستان رخ داد: {e}")
+        await update.message.reply_text(f"خطایی در روایت داستان رخ داد: {e}")
         return ConversationHandler.END
 
     return STORY_STATE
@@ -188,21 +187,24 @@ async def handle_story(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
 
     # افزودن پاسخ کاربر به تاریخچه
     history.append({"role": "user", "content": user_input})
-    await update.message.reply_text("نقال در حال اندیشیدن به ادامه سرنوشت توست...", reply_markup=ReplyKeyboardRemove()) # دکمه‌های قبلی را بردار
+    await update.message.reply_text("نقال در حال اندیشیدن به ادامه سرنوشت توست...", reply_markup=ReplyKeyboardRemove()) 
 
-    # ### به‌روزرسانی دستورالعمل سیستمی برای حفظ فشار بر هوش مصنوعی ###
+    # به‌روزرسانی دستورالعمل سیستمی برای حفظ فشار بر هوش مصنوعی
     current_system_prompt = (
-        "تو یک نقال داستان‌گو هستی. داستان را با زبانی ساده و دوستانه و با **تمرکز بر مخاطب (استفاده از ضمیر تو/شما)** ادامه بده. "
-        "**هر بخش داستان باید مختصر و در نهایت به یک چالش ختم شود.** "
-        "**پس از اتمام داستان، حتماً ۳ گزینه انتخابی جدید برای ادامه داستان به صورت [1. متن گزینه] [2. متن گزینه] [3. متن گزینه] ارائه کن. این فرمت [1. ] برای شناسایی دکمه‌ها توسط ربات الزامی است.**"
+        "تو یک نقال حماسی و باوفا به شاهنامه هستی. "
+        "داستان را با زبانی ساده، اما با حفظ **اصول و لحن حماسی** و **وفادار به بطن داستان‌های فردوسی** روایت کن. "
+        "فقط از وقایع، شخصیت‌ها، و مکان‌های مرتبط با جهان شاهنامه استفاده کن. "
+        "با **تمرکز بر مخاطب (تو/شما)** داستان را پیش ببر. "
+        "**هر بخش داستان باید مختصر، پرچالش و در نهایت با ۳ گزینه انتخابی جدید به صورت [1. متن گزینه] [2. متن گزینه] [3. متن گزینه] تمام شود. این فرمت [1. ] برای شناسایی دکمه‌ها توسط ربات الزامی است.**"
     )
     # جایگزین کردن پیام سیستم قدیمی در تاریخچه
     if history[0]["role"] == "system":
         history[0]["content"] = current_system_prompt
     
     try:
+        # استفاده از مدل Gemini-2.5-flash
         response = client.chat.completions.create(
-            model="gpt-4o-mini",
+            model="gemini-2.5-flash",
             messages=history,
             stream=True,
             max_tokens=2000
@@ -269,6 +271,7 @@ def main() -> None:
 
     application.add_handler(conv_handler)
     logger.info("ربات در حال آغاز به کار است... (نسخه نهایی: تعاملی با دکمه)")
+    # پاک کردن آپدیت‌های قدیمی هنگام شروع
     application.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
