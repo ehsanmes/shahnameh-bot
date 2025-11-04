@@ -1,2 +1,2 @@
 python-telegram-bot
-avalai
+aval-ai-lib
