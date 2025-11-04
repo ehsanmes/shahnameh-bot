@@ -1,173 +1,184 @@
-# bot.py 
 import os
-import requests
 import logging
-from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
-from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
+from avalai.llms import LLM, AvAITChat, PromptMessage, PromptMessageRole
+from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove
+from telegram.ext import (
+    Application,
+    CommandHandler,
+    ContextTypes,
+    ConversationHandler,
+    MessageHandler,
+    filters,
+)
 
-# --- تنظیمات اصلی ---
-
-# [مهم] این دو متغیر از هاست (Render.com) خوانده می‌شوند
-TELEGRAM_BOT_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN')
-AVALAI_API_KEY = os.environ.get('AVALAI_API_KEY')
-
-# آدرس API که از AvalAI استفاده می‌کند
-AVALAI_API_URL = "https://api.avalai.ir/v1/chat/completions"
-
-# مدلی که برای MVP استفاده می‌کنیم
-AI_MODEL = "gpt-4o-mini"
-
-# دیکشنری برای نگهداری "حافظه" داستان هر کاربر
-user_sessions = {}
-
-# تنظیمات لاگ‌گیری (برای خطایابی)
+# فعال‌سازی لاگ‌گیری
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
 )
+# تنظیم لاگر کتابخانه تلگرام روی سطح بالاتر برای جلوگیری از اسپم لاگ
+logging.getLogger("httpx").setLevel(logging.WARNING)
+
 logger = logging.getLogger(__name__)
 
-# --- پرامپت اصلی و شخصیت‌ها ---
+# گرفتن کلیدهای API از متغیرهای محیطی
+# این کلیدها باید در Railway در بخش "Variables" تنظیم شوند
+TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
+AVALAI_API_KEY = os.environ.get("AVALAI_API_KEY")
 
-SYSTEM_PROMPT = """
-تو یک داستان‌گوی متخصص شاهنامه هستی. نام تو 'نقّال' است. کاربر یکی از نقش‌ها را انتخاب کرده است. وظیفه تو تولید یک داستان پویا و حماسی بر اساس انتخاب‌های کاربر است.
+# تعریف حالت‌های مکالمه
+ROLE_STATE, STORY_STATE = range(2)
 
-قوانین اکید:
-۱. لحن تو باید حماسی، ادبی ولی قابل فهم (مانند شاهنامه) باشد.
-۲. داستان باید در دنیای اساطیری ایران (شاهنامه) رخ دهد.
-۳. در هر مرحله، تو باید یک پاراگراف روایت (narrative) و سپس دقیقاً ۳ گزینه (choices) برای ادامه به کاربر بدهی.
-۴. هرگز از نقش خود خارج نشوی.
+# ========== تابع شروع (بازنویسی شده طبق درخواست شما) ==========
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """شروع مکالمه و ایجاد زمینه داستانی."""
+    
+    # ۱. ایجاد زمینه داستانی
+    story_context = (
+        "سلام! من نقال شاهنامه هستم و تو به قلب داستان‌های حماسی ایران پا گذاشته‌ای.\n\n"
+        "هنگامه‌ای است بس شگرف! تورانیان به مرزهای ایران تاخته‌اند، "
+        "دیو سپید در مازندران بند بر پای پهلوانان نهاده، و شاه کاووس در بند است.\n\n"
+        "سرنوشت ایران‌زمین در دستان توست."
+    )
+    await update.message.reply_text(story_context)
+    
+    # ۲. درخواست نقش با مثال‌های متنوع
+    await update.message.reply_text(
+        "نقش تو در این داستان چیست؟\n"
+        "نام یکی از پهلوانان، شاهان، یا دلیران شاهنامه را برای من بنویس تا داستان اختصاصی تو را آغاز کنم.\n\n"
+        "مثلاً: رستم، سهراب، گودرز، فرنگیس، گردآفرید، سیاوش، منیژه"
+    )
+    
+    return ROLE_STATE
+# =========================================================
 
-قالب خروجی تو باید دقیقاً یک JSON به شکل زیر باشد و هیچ متنی قبل یا بعد از آن نباشد:
-{
-  "narrative": "متن روایت تو در اینجا قرار می‌گیرد.",
-  "choices": [
-    { "id": "A", "text": "متن گزینه اول" },
-    { "id": "B", "text": "متن گزینه دوم" },
-    { "id": "C", "text": "متن گزینه سوم" }
-  ]
-}
-"""
+async def set_role(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """ذخیره نقش انتخاب شده و شروع داستان."""
+    user_role = update.message.text
+    context.user_data["role"] = user_role
+    
+    logger.info(f"نقش انتخاب شده توسط کاربر: {user_role}")
 
-CHARACTERS = {
-    "pehlevan": "پهلوان‌زاده‌ای جوان از زابلستان (مانند رستم)",
-    "mobed": "موبدی خردمند در دربار شاه (مانند جاماسپ)",
-    "shahzadeh": "شاهزاده‌ای تورانی با قلبی دوگانه (مانند سیاوش)"
-}
+    # ایجاد یک نمونه از مدل زبان
+    try:
+        model = AvAITChat(api_key=AVALAI_API_KEY)
+    except Exception as e:
+        logger.error(f"خطا در ساخت مدل AvalAI: {e}")
+        await update.message.reply_text("خطایی در اتصال به نقال (مدل هوش مصنوعی) رخ داد. لطفا دوباره تلاش کنید.")
+        return ConversationHandler.END
 
-# --- بخش منطق ربات (Handlers) ---
-
-# 1. دستور /start
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.message.from_user.id
-    logger.info(f"کاربر {user_id} ربات را شروع کرد.")
-
-    user_sessions[user_id] = [{"role": "system", "content": SYSTEM_PROMPT}]
-
-    keyboard = [
-        [InlineKeyboardButton(text, callback_data=key)] for key, text in CHARACTERS.items()
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
+    context.user_data["model"] = model
+    context.user_data["history"] = [] # تاریخچه گفتگو
 
     await update.message.reply_text(
-        "به نام خداوند جان و خرد.\n\nای جوینده راه، خوش آمدی. تو در آستانه ورود به داستان خود در شاهنامه هستی.\n\nنخست، نقش خود را برگزین:",
-        reply_markup=reply_markup
+        f"عالی! تو اکنون «{user_role}» هستی. بگذار داستان تو را آغاز کنم...\n\n"
+        "پرده اول: در اعماق داستان...\n\n"
+        "(لطفا چند لحظه صبر کن تا اولین بخش از سرنوشت تو را روایت کنم...)",
+        reply_markup=ReplyKeyboardRemove(),
     )
 
-# 2. مدیریت تمام دکمه‌های شیشه‌ای
-async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
+    # ساخت اولین پیام برای مدل
+    system_prompt = (
+        "تو یک نقال حماسی شاهنامه هستی. کاربر نقش یکی از شخصیت‌های شاهنامه را انتخاب کرده است. "
+        "تو باید یک داستان تعاملی کوتاه بر اساس آن نقش برای او روایت کنی. "
+        "داستان باید پر از توصیفات حماسی و به زبان ادبیات کهن ایران باشد. "
+        "هر بخش از داستان را با یک چالش یا یک انتخاب برای کاربر تمام کن."
+    )
+    
+    first_prompt = f"داستان من را به عنوان «{user_role}» آغاز کن. اولین صحنه و اولین چالش من چه خواهد بود؟"
+    
+    # افزودن به تاریخچه
+    context.user_data["history"].append(PromptMessage(role=PromptMessageRole.SYSTEM, content=system_prompt))
+    context.user_data["history"].append(PromptMessage(role=PromptMessageRole.USER, content=first_prompt))
 
-    user_id = query.from_user.id
-    choice = query.data
-
-    if user_id not in user_sessions:
-        await query.edit_message_text("خطا: حافظه داستان یافت نشد. لطفاً با /start مجدد شروع کنید.")
-        return
-
-    if choice in CHARACTERS:
-        character_name = CHARACTERS[choice].split(" (")[0]
-        logger.info(f"کاربر {user_id} نقش {character_name} را انتخاب کرد.")
-        user_message = f"من نقش '{character_name}' را برمی‌گزینم. داستان مرا آغاز کن."
-        user_sessions[user_id].append({"role": "user", "content": user_message})
-        await query.edit_message_text("نقش تو برگزیده شد... نقّال در حال بافتن تار و پود داستان توست. شکیبا باش...")
-    else:
-        logger.info(f"کاربر {user_id} گزینه {choice} را انتخاب کرد.")
-        user_message = f"من گزینه '{choice}' را انتخاب می‌کنم."
-        user_sessions[user_id].append({"role": "user", "content": user_message})
-        await query.edit_message_text(f"گزینه {choice} انتخاب شد... نقّال در حال نگریستن به ادامه راه است...")
-
-    await send_story_step(query, user_id)
-
-# 3. تابع اصلی: تماس با AvalAI و ارسال مرحله بعدی
-async def send_story_step(query_or_update, user_id):
-    history = user_sessions.get(user_id, [])
-    if not history: return
-
-    headers = {
-        "Authorization": f"Bearer {AVALAI_API_KEY}",
-        "Content-Type": "application/json"
-    }
-
-    payload = {
-        "model": AI_MODEL,
-        "messages": history,
-        "response_format": {"type": "json_object"}
-    }
-
+    # ارسال درخواست به API
     try:
-        response = requests.post(AVALAI_API_URL, headers=headers, json=payload, timeout=60)
-        response.raise_for_status()
+        response_stream = model.chat_stream(
+            system=system_prompt,
+            prompt=first_prompt
+        )
+        
+        full_response = ""
+        for chunk in response_stream:
+            full_response += chunk
 
-        ai_response_json = response.json()
-        ai_message_content = ai_response_json['choices'][0]['message']['content']
-
-        user_sessions[user_id].append({"role": "assistant", "content": ai_message_content})
-
-        import json
-        story_data = json.loads(ai_message_content)
-        narrative = story_data['narrative']
-        choices = story_data['choices']
-
-        keyboard = [
-            [InlineKeyboardButton(choice['text'], callback_data=choice['id'])] for choice in choices
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-
-        if hasattr(query_or_update, 'edit_message_text'):
-            await query_or_update.edit_message_text(narrative, reply_markup=reply_markup)
-        else:
-            await query_or_update.message.reply_text(narrative, reply_markup=reply_markup)
-
-    except requests.exceptions.RequestException as e:
-        logger.error(f"خطا در ارتباط با AvalAI: {e}")
-        error_message = f"خطا در ارتباط با نقّال. (Error: {e})"
-        if hasattr(query_or_update, 'edit_message_text'):
-            await query_or_update.edit_message_text(error_message)
-        else:
-            await query_or_update.message.reply_text(error_message)
-
+        context.user_data["history"].append(PromptMessage(role=PromptMessageRole.ASSISTANT, content=full_response))
+        await update.message.reply_text(full_response)
+        
     except Exception as e:
-        logger.error(f"خطای ناشناخته در پردازش داستان: {e}")
-        if hasattr(query_or_update, 'edit_message_text'):
-            await query_or_update.edit_message_text("نقّال در کلام خود دچار لکنت شد. لطفاً با /start مجدد امتحان کنید.")
+        logger.error(f"خطا در ارتباط با API در set_role: {e}")
+        # بررسی خطای 401 به صورت مشخص
+        if "401" in str(e):
+             await update.message.reply_text("خطا در ارتباط با نقال (ارور 401). به نظر می‌رسد کلید API معتبر نیست.")
         else:
-            await query_or_update.message.reply_text("خطای داخلی. /start")
-        if user_id in user_sessions:
-            del user_sessions[user_id]
+            await update.message.reply_text(f"خطایی در روایت داستان رخ داد: {e}")
+        return ConversationHandler.END
 
+    return STORY_STATE
 
-# --- راه‌اندازی ربات ---
-def main():
-    if not TELEGRAM_BOT_TOKEN or not AVALAI_API_KEY:
-        logger.error("خطای حیاتی: توکن‌های تلگرام یا AvalAI در متغیرهای محیطی تنظیم نشده‌اند.")
+async def handle_story(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """ادامه داستان بر اساس ورودی کاربر."""
+    user_input = update.message.text
+    model = context.user_data["model"]
+    history = context.user_data["history"]
+
+    # افزودن پاسخ کاربر به تاریخچه
+    history.append(PromptMessage(role=PromptMessageRole.USER, content=user_input))
+
+    await update.message.reply_text("نقال در حال اندیشیدن به ادامه سرنوشت توست...")
+
+    # ارسال تاریخچه به API
+    try:
+        response_stream = model.chat_stream_history(history=history)
+        
+        full_response = ""
+        for chunk in response_stream:
+            full_response += chunk
+
+        # افزودن پاسخ مدل به تاریخچه
+        history.append(PromptMessage(role=PromptMessageRole.ASSISTANT, content=full_response))
+        await update.message.reply_text(full_response)
+        
+    except Exception as e:
+        logger.error(f"خطا در ارتباط با API در handle_story: {e}")
+        await update.message.reply_text(f"خطایی در ادامه داستان رخ داد: {e}")
+        return ConversationHandler.END
+
+    return STORY_STATE
+
+async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """پایان دادن به مکالمه."""
+    await update.message.reply_text(
+        "بدرود! باشد که در داستانی دیگر تو را ببینم.", reply_markup=ReplyKeyboardRemove()
+    )
+    return ConversationHandler.END
+
+def main() -> None:
+    """اجرای ربات."""
+    
+    # بررسی وجود توکن‌ها قبل از اجرا
+    if not TELEGRAM_BOT_TOKEN:
+        logger.fatal("متغیر TELEGRAM_BOT_TOKEN پیدا نشد. ربات نمی‌تواند اجرا شود.")
+        return
+        
+    if not AVALAI_API_KEY:
+        logger.fatal("متغیر AVALAI_API_KEY پیدا نشد. ربات نمی‌تواند اجرا شود.")
         return
 
     application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
 
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CallbackQueryHandler(button_handler))
+    # تعریف ConversationHandler
+    conv_handler = ConversationHandler(
+        entry_points=[CommandHandler("start", start)],
+        states={
+            ROLE_STATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, set_role)],
+            STORY_STATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_story)],
+        },
+        fallbacks=[CommandHandler("cancel", cancel)],
+    )
 
+    application.add_handler(conv_handler)
+
+    # نمایش لاگ آغاز به کار
     logger.info("ربات در حال آغاز به کار است...")
     application.run_polling()
 
