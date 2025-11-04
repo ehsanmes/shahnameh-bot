@@ -1,6 +1,7 @@
 import os
 import re
 import logging
+import asyncio # <-- جدید: برای حل مشکل کندی و قطع اتصال
 from openai import OpenAI
 from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove
 from telegram.ext import (
@@ -48,19 +49,14 @@ def extract_options(text: str) -> tuple[str, list[str]]:
     # الگوی رگولار اکسپرشن برای پیدا کردن گزینه های [عدد. متن]
     pattern = re.compile(r"\[(\d+)\.\s*(.+?)\]")
     
-    # پیدا کردن همه گزینه‌ها
     matches = pattern.findall(text)
     
     if matches:
-        # ساخت لیست گزینه‌ها
         options = [match[1].strip() for match in matches]
-        # حذف گزینه‌ها از متن اصلی داستان برای نمایش تمیز
         story_text = pattern.sub(r"", text).strip()
     else:
-        # اگر گزینه‌ای پیدا نشد، متن اصلی داستان را برمی‌گرداند.
         story_text = text
 
-    # اگر هوش مصنوعی پایان داستان را مشخص کند، دکمه /start اضافه می‌شود.
     if "پایان داستان" in story_text or "داستان به پایان رسید" in story_text:
          options.append("/start")
     
@@ -142,12 +138,14 @@ async def set_role(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         full_response = ""
         chunk_message = await update.message.reply_text("نقال در حال سرودن شعر است...")
         
+        # ### مکث برای پایداری شبکه ###
+        await asyncio.sleep(1) 
+        
         for chunk in response:
             chunk_content = chunk.choices[0].delta.content
             if chunk_content:
                 full_response += chunk_content
                 try:
-                    # ایجاد افکت تایپ
                     await context.bot.edit_message_text(text=full_response, chat_id=update.effective_chat.id, message_id=chunk_message.message_id)
                 except Exception:
                     pass
@@ -211,6 +209,9 @@ async def handle_story(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
         full_response = ""
         chunk_message = await update.message.reply_text("...")
 
+        # ### مکث برای پایداری شبکه ###
+        await asyncio.sleep(1) 
+        
         for chunk in response:
             chunk_content = chunk.choices[0].delta.content
             if chunk_content:
