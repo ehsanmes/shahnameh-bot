@@ -1,5 +1,5 @@
 import os
-import re # برای پیدا کردن گزینه‌ها از متن
+import re
 import logging
 from openai import OpenAI
 from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove
@@ -19,11 +19,11 @@ logging.basicConfig(
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
-# گرفتن کلیدهای API از متغیرهای محیطی
+# --- گرفتن کلیدهای API از متغیرهای محیطی ---
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 AVALAI_API_KEY = os.environ.get("AVALAI_API_KEY")
 
-# راه‌اندازی کلاینت OpenAI برای اتصال به AvalAI
+# --- راه‌اندازی کلاینت OpenAI برای اتصال به AvalAI ---
 client = None
 if AVALAI_API_KEY:
     try:
@@ -46,6 +46,7 @@ def extract_options(text: str) -> tuple[str, list[str]]:
     """
     options = []
     # الگوی رگولار اکسپرشن برای پیدا کردن گزینه های [عدد. متن]
+    # این الگو با توجه به سختگیری کد AI تنظیم شده است.
     pattern = re.compile(r"\[(\d+)\.\s*(.+?)\]")
     
     # پیدا کردن همه گزینه‌ها
@@ -55,12 +56,13 @@ def extract_options(text: str) -> tuple[str, list[str]]:
         # ساخت لیست گزینه‌ها
         options = [match[1].strip() for match in matches]
         # حذف گزینه‌ها از متن اصلی داستان برای نمایش تمیز
+        # این کار از تداخل متن با دکمه جلوگیری می‌کند.
         story_text = pattern.sub(r"", text).strip()
     else:
         # اگر گزینه‌ای پیدا نشد، متن اصلی داستان را برمی‌گرداند.
         story_text = text
 
-    # اگر هوش مصنوعی پایان داستان را مشخص کند (مثلاً با "پایان داستان")، دکمه‌ای اضافه می‌کند.
+    # اگر هوش مصنوعی پایان داستان را مشخص کند، دکمه /start اضافه می‌شود.
     if "پایان داستان" in story_text or "داستان به پایان رسید" in story_text:
          options.append("/start")
     
@@ -116,13 +118,11 @@ async def set_role(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         reply_markup=ReplyKeyboardRemove()
     )
 
-    # ### تغییر ۱: تاکید بر لحن دوم شخص مفرد و اجبار به دادن ۳ گزینه ###
+    # ### اصلاحیه نهایی System Prompt برای القای نقش اول و اجبار به فرمت دکمه ###
     system_prompt = (
-        "تو یک نقال داستان‌گو هستی. کاربر نقش یکی از شخصیت‌های شاهنامه را انتخاب کرده است. "
-        "تو باید یک داستان تعاملی و جذاب برای او روایت کنی. "
-        "داستان را با زبانی ساده، امروزی، و دوستانه و **با تمرکز بر مخاطب (استفاده از ضمیر تو/شما)** بنویس. "
-        "**هر بخش از داستان باید مختصر و در نهایت به یک چالش ختم شود.** "
-        "**پس از اتمام داستان، حتماً ۳ گزینه انتخابی جدید برای ادامه داستان به صورت [1. متن گزینه] [2. متن گزینه] [3. متن گزینه] ارائه کن. بدون این گزینه‌ها داستان ناقص است.**"
+        "تو یک نقال داستان‌گو هستی. داستان را با زبانی ساده و دوستانه و با **تمرکز بر مخاطب (استفاده از ضمیر تو/شما)** بنویس. "
+        "**هر بخش داستان باید مختصر و در نهایت به یک چالش ختم شود.** "
+        "**پس از اتمام داستان، حتماً ۳ گزینه انتخابی جدید برای ادامه داستان به صورت [1. متن گزینه] [2. متن گزینه] [3. متن گزینه] ارائه کن. این فرمت [1. ] برای شناسایی دکمه‌ها توسط ربات الزامی است.**"
     )
     
     first_prompt = f"داستان من را به عنوان «{user_role}» آغاز کن. اولین صحنه و اولین چالش من چه خواهد بود؟"
@@ -137,7 +137,7 @@ async def set_role(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
             model="gpt-4o-mini",
             messages=context.user_data["history"],
             stream=True,
-            max_tokens=1500
+            max_tokens=2000 # افزایش بیشتر برای اطمینان از کامل شدن
         )
         
         full_response = ""
@@ -152,7 +152,6 @@ async def set_role(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
                 except Exception:
                     pass
 
-        # ### تغییر ۲: استخراج گزینه‌ها و نمایش دکمه ###
         story_text, options = extract_options(full_response)
         
         # ویرایش نهایی متن بدون گزینه‌های [1.] و [2.]
@@ -163,8 +162,9 @@ async def set_role(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
             reply_keyboard = [[opt] for opt in options]
             markup = ReplyKeyboardMarkup(reply_keyboard, resize_keyboard=True, one_time_keyboard=False)
             await update.message.reply_text("تصمیم تو چیست؟", reply_markup=markup)
+        else:
+            await update.message.reply_text("نقال منتظر پاسخ شماست! پاسخ خود را تایپ کنید یا /cancel را بزنید.", reply_markup=ReplyKeyboardRemove())
         
-        # ذخیره پاسخ کامل در تاریخچه
         context.user_data["history"].append({"role": "assistant", "content": full_response})
         
     except Exception as e:
@@ -188,14 +188,24 @@ async def handle_story(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
 
     # افزودن پاسخ کاربر به تاریخچه
     history.append({"role": "user", "content": user_input})
-    await update.message.reply_text("نقال در حال اندیشیدن به ادامه سرنوشت توست...")
+    await update.message.reply_text("نقال در حال اندیشیدن به ادامه سرنوشت توست...", reply_markup=ReplyKeyboardRemove()) # دکمه‌های قبلی را بردار
 
+    # ### به‌روزرسانی دستورالعمل سیستمی برای حفظ فشار بر هوش مصنوعی ###
+    current_system_prompt = (
+        "تو یک نقال داستان‌گو هستی. داستان را با زبانی ساده و دوستانه و با **تمرکز بر مخاطب (استفاده از ضمیر تو/شما)** ادامه بده. "
+        "**هر بخش داستان باید مختصر و در نهایت به یک چالش ختم شود.** "
+        "**پس از اتمام داستان، حتماً ۳ گزینه انتخابی جدید برای ادامه داستان به صورت [1. متن گزینه] [2. متن گزینه] [3. متن گزینه] ارائه کن. این فرمت [1. ] برای شناسایی دکمه‌ها توسط ربات الزامی است.**"
+    )
+    # جایگزین کردن پیام سیستم قدیمی در تاریخچه
+    if history[0]["role"] == "system":
+        history[0]["content"] = current_system_prompt
+    
     try:
         response = client.chat.completions.create(
             model="gpt-4o-mini",
             messages=history,
             stream=True,
-            max_tokens=1500
+            max_tokens=2000
         )
         
         full_response = ""
@@ -210,7 +220,6 @@ async def handle_story(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
                 except Exception:
                     pass
 
-        # ### تغییر ۲: استخراج گزینه‌ها و نمایش دکمه (همانند set_role) ###
         story_text, options = extract_options(full_response)
         
         # ویرایش نهایی متن بدون گزینه‌های [1.] و [2.]
@@ -222,7 +231,6 @@ async def handle_story(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
             markup = ReplyKeyboardMarkup(reply_keyboard, resize_keyboard=True, one_time_keyboard=False)
             await update.message.reply_text("تصمیم تو چیست؟", reply_markup=markup)
         else:
-            # اگر دکمه‌ای نیست، کیبورد را بردار
             await update.message.reply_text("لطفاً پاسخ خود را تایپ کنید تا داستان ادامه یابد.", reply_markup=ReplyKeyboardRemove())
 
         history.append({"role": "assistant", "content": full_response})
